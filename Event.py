@@ -28,11 +28,18 @@ class Event:
         for j, circle in enumerate(player_circles):
             circle.center = moment.players[j].x, moment.players[j].y
             annotations[j].set_position(circle.center)
-            clock_test = 'Quarter {:d}\n {:02d}:{:02d}\n {:03.1f}'.format(
-                         moment.quarter,
-                         int(moment.game_clock) % 3600 // 60,
-                         int(moment.game_clock) % 60,
-                         moment.shot_clock)
+            try:
+                clock_test = 'Quarter {:d}\n {:02d}:{:02d}\n {:03.1f}'.format(
+                            moment.quarter,
+                            int(moment.game_clock) % 3600 // 60,
+                            int(moment.game_clock) % 60,
+                            moment.shot_clock)
+            except Exception:
+                clock_test = 'Quarter {:d}\n {:02d}:{:02d}\n NaN'.format(
+                            moment.quarter,
+                            int(moment.game_clock) % 3600 // 60,
+                            int(moment.game_clock) % 60)
+                
             clock_info.set_text(clock_test)
         ball_circle.center = moment.ball.x, moment.ball.y
         ball_circle.radius = moment.ball.radius / Constant.NORMALIZATION_COEF
@@ -80,8 +87,8 @@ class Event:
                               cellColours=cell_colours,
                               fontsize=Constant.FONTSIZE,
                               cellLoc='center')
-        table.scale(1, Constant.SCALE)
-        table_cells = table.properties()['child_artists']
+        #table.scale(1, Constant.SCALE)
+        table_cells = table.properties()['children']
         for cell in table_cells:
             cell._text.set_color('white')
 
@@ -100,4 +107,5 @@ class Event:
         court = plt.imread("court.png")
         plt.imshow(court, zorder=0, extent=[Constant.X_MIN, Constant.X_MAX - Constant.DIFF,
                                             Constant.Y_MAX, Constant.Y_MIN])
-        plt.show()
+        #plt.show()
+        anim.save('ejjjj.gif')
