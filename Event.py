@@ -1,6 +1,4 @@
 from Constant import Constant
-from Moment import Moment
-from Team import Team
 import matplotlib.pyplot as plt
 from matplotlib import animation
 from matplotlib.patches import Circle, Rectangle, Arc

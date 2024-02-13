@@ -1,10 +1,10 @@
 import pandas as pd
 from Event import Event
-from Team import Team
 from Constant import Constant
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib import animation
+import math
 from matplotlib.patches import Circle, Rectangle, Arc
 
 class Game:
@@ -60,6 +60,7 @@ class Game:
                     saved_events.append([event_type_data.iloc[0]])"""
             
         sportvu_data = sportvu_data[mask]
+        sportvu_events_data = sportvu_data['events']
         #sportvu_data['actions'] = saved_events
         
         pd.set_option('mode.chained_assignment', 'warn')
@@ -127,6 +128,7 @@ class Game:
             'team_name': team['name'],
             'abbreviation': team['abbreviation']
             } for team in teams])
+        team_df['color'] = team_df['team_id'].map(Constant.TEAMS_COLOR)
         return team_df
     
     def get_player_df(self, sportvu_events_data):
@@ -161,9 +163,10 @@ class Game:
             for events_moments in sporvu_events_df['moments'] 
             for moment in events_moments
         ])
-        moment_df = moment_df[moment_df.duplicated(subset='time_usa') == False]
+        moment_df = moment_df[moment_df.duplicated(subset=['time_usa', 'quater_time']) == False]
         moment_df['play_time'] = moment_df[['quater_time', 'quater']].apply(lambda row: self.quater_time_to_play_time(*row), axis=1)
         moment_df.sort_values(by=['quater', 'play_time'], inplace=True)
+        moment_df = moment_df[moment_df['moves'].apply(lambda x: len(x) == 11)]
         moment_df.insert(0, 'moment_id', range(len(moment_df)))
         return moment_df
     
@@ -203,8 +206,9 @@ class Game:
             return None
         
     def get_home_side(self, shot_df, move_df, quater):
-        # True = Right/+, False = Left/-
-        quater_shot_df = shot_df[shot_df['PERIOD']==1]
+        # True = home is Right/+, False = home is Left/-
+        SHOT_REQUIRED_NUM = 5
+        quater_shot_df = shot_df[shot_df['PERIOD']==quater]
         
         quater_shot_counter = 0
         proof_counter = 0
@@ -226,7 +230,7 @@ class Game:
                 else:
                     proof_counter += 1
             
-            if quater_shot_counter == 2:
+            if quater_shot_counter == SHOT_REQUIRED_NUM:
                 break
             quater_shot_counter += 1
             
@@ -240,11 +244,12 @@ class Game:
         return df
     
     def home_side_to_right(self, moment_df, shot_df, move_df):
-        for quater in set(moment_df['quater']):
-            side = self.get_home_side(shot_df, move_df, quater) 
-            if side:
+        for quater in set(moment_df['quater']): # should be .unique
+            is_home_right_side = self.get_home_side(shot_df, move_df, quater) 
+            if is_home_right_side:
                 pass
             else:
+                print(f'swap side quater {quater}')
                 quater_moment_ids = moment_df[moment_df['quater'] == quater]['moment_id']
                 condition = move_df['moment_id'].isin(quater_moment_ids)
         
@@ -276,93 +281,167 @@ class Game:
         self.player_df = player_df
         self.team_df = team_df
         self.action_df = action_df
-        return sportvu_data, action_df
-    
-    def get_df(self):
-        df = self.read_json()
+        return sportvu_data, sportvu_events_data    
         
-    def show(self, start_time, end_time):
-        # Leave some space for inbound passes
+    def update_radius(self, i, player_circles, ball_circle, annotations, clock_info, moment_df, players_df, ball_df, table_cells):
+        #print(f'frame {i}')
+        actual_moment = moment_df.iloc[i]
+        moment_id = actual_moment['moment_id']
+        actual_players = players_df[players_df['moment_id'] == moment_id]
+        actual_ball = ball_df[ball_df['moment_id'] == moment_id].iloc[0]
+        
+        for idx, cell in enumerate(table_cells[:10]):
+            player = actual_players.iloc[idx]
+            cell._text.set_color('white')
+            cell._text.set_text(f'{player.lastname} {player.firstname} #{player.jersey_num}')
+            
+        for j, circle in enumerate(player_circles):
+            player = actual_players.iloc[j]
+            circle.center = player.x, player.y
+            annotations[j].set_position(circle.center)
+            annotations[j].set_text(str(player.jersey_num))
+            try:
+                clock_test = 'Quarter {:d}\n Play_time {:03.1f}\n {:02d}:{:02d}\n {:03.1f}'.format(
+                            int(actual_moment.quater),
+                            actual_moment.play_time,
+                            int(actual_moment.quater_time) % 3600 // 60,
+                            int(actual_moment.quater_time) % 60,
+                            actual_moment.shot_clock)
+            except Exception:
+                clock_test = 'Quarter {:d}\n Play_time {:03.1f}\n {:02d}:{:02d}\n NaN'.format(
+                            int(actual_moment.quater),
+                            actual_moment.play_time,
+                            int(actual_moment.quater_time) % 3600 // 60,
+                            int(actual_moment.quater_time) % 60)
+                
+            clock_info.set_text(clock_test)
+        ball_circle.center = actual_ball.x, actual_ball.y
+        ball_circle.radius = actual_ball.z / Constant.NORMALIZATION_COEF
+        return player_circles, ball_circle
+    
+    
+    def show(self, start_time, end_time, file_name='tmp.gif'):
+        show_moment_df = self.moment_df[(self.moment_df['play_time'] >= start_time) & (self.moment_df['play_time'] <= end_time)]
+        show_moment_df = show_moment_df[['moment_id', 'quater', 'quater_time', 'play_time', 'shot_clock']]
+
+        show_move_df = self.move_df[self.move_df['moment_id'].isin(show_moment_df['moment_id'])]    
+
+        players_df = show_move_df[show_move_df['object_id'] != -1]
+        players_df = pd.merge(players_df, self.player_df, how='left', left_on='object_id', right_on='player_id')
+        players_df = pd.merge(players_df, self.team_df, how='left', on='team_id')
+        players_df = players_df[['x', 'y', 'jersey_num', 'lastname', 'firstname', 'team_id', 'color', 'moment_id', 'abbreviation']]
+
+        ball_df = show_move_df[show_move_df['object_id'] == -1]
+        ball_df['color'] = Constant.BALL_COLOR
+
+        home_player_df = players_df[players_df['team_id'] == self.game_series['team_home_id']] 
+        home_team_data = home_player_df[['abbreviation' , 'color']].iloc[0]
+        visitor_player_df = players_df[players_df['team_id'] == self.game_series['team_visitor_id']]
+        visitor_team_data = visitor_player_df[['abbreviation' , 'color']].iloc[0]
+        
+        start_moment = show_moment_df.iloc[0]
+        moment_id = start_moment['moment_id']
+        actual_players = players_df[players_df['moment_id'] == moment_id]
+        actual_ball = ball_df[ball_df['moment_id'] == moment_id].iloc[0]
+        
         ax = plt.axes(xlim=(Constant.X_MIN,
-                            Constant.X_MAX),
-                      ylim=(Constant.Y_MIN,
-                            Constant.Y_MAX))
+                    Constant.X_MAX),
+              ylim=(Constant.Y_MIN,
+                    Constant.Y_MAX))
         ax.axis('off')
         fig = plt.gcf()
         ax.grid(False)
-        moment_df = self.moment_df
-        moment_df = moment_df[(moment_df['play_time'] >= start_time) & (moment_df['play_time'] <= end_time)]
-        moment_df = moment_df[['moment_id', 'quater', 'quater_time', 'play_time', 'shot_clock']]
         
-        move_df = self.move_df
-        move_df = move_df[move_df['moment_id'].isin(moment_df['moment_id'])]    
-        
-        team_df = self.team_df
-        team_df['color'] = team_df['team_id'].map(Constant.TEAMS_COLOR)
-        
-        player_df = move_df[move_df['object_id'] != -1]
-        player_df = pd.merge(player_df, self.player_df, how='left', on='player_id')
-        player_df = pd.merge(player_df, team_df, how='left', on='team_id')
-        player_df = player_df[['x', 'y', 'jersey_num', 'lastname', 'firstname', 'team_id', 'color']]
-        
-        ball_df = move_df[move_df['object_id'] == -1]
-        home_player_df = player_df[player_df['team_id'] == self.game_series['team_home_id']] 
-        #home_team_data = home_player_df[['abbreviation' , 'color']].iloc[0]
-        visitor_player_df = player_df[player_df['team_id'] == self.game_series['team_visitor_id']]
-        #visitor_team_data = home_player_df[['abbreviation' , 'color']].iloc[0]
-                             
-        start_moment = moments[0]
-        player_dict = self.player_ids_dict
-
         clock_info = ax.annotate('', xy=[Constant.X_CENTER, Constant.Y_CENTER],
-                                 color='black', horizontalalignment='center',
-                                   verticalalignment='center')
+                         color='black', horizontalalignment='center',
+                           verticalalignment='center')
 
-        annotations = [ax.annotate(self.player_ids_dict[player.id][1], xy=[0, 0], color='w',
-                                   horizontalalignment='center',
-                                   verticalalignment='center', fontweight='bold')
-                       for player in start_moment.players]
-
-        # Prepare table
-        sorted_players = sorted(start_moment.players, key=lambda player: player.team.id)
+        annotations = [ax.annotate(player.jersey_num, xy=[0, 0], color='w',
+                                horizontalalignment='center',
+                                verticalalignment='center', fontweight='bold')
+                    for player in actual_players.itertuples()]
+        player_circles = [plt.Circle((0, 0), Constant.PLAYER_CIRCLE_SIZE, color=player.color)
+                        for player in actual_players.itertuples()]
+        ball_circle = plt.Circle((0, 0), Constant.PLAYER_CIRCLE_SIZE,
+                                color=actual_ball.color)
+        """ax.annotate('.', xy=[20, 20], color='b',
+                                horizontalalignment='center',
+                                verticalalignment='center', fontweight='bold')
+        ax.annotate('.', xy=[22, 20], color='b',
+                        horizontalalignment='center',
+                        verticalalignment='center', fontweight='bold')"""
         
-        home_player = sorted_players[0]
-        guest_player = sorted_players[5]
-        column_labels = tuple([home_player.team.name, guest_player.team.name])
-        column_colours = tuple([home_player.team.color, guest_player.team.color])
+        column_labels = tuple([visitor_team_data.abbreviation, home_team_data.abbreviation])
+        column_colours = tuple([visitor_team_data.color, home_team_data.color])
         cell_colours = [column_colours for _ in range(5)]
-        
-        home_players = [' #'.join([player_dict[player.id][0], player_dict[player.id][1]]) for player in sorted_players[:5]]
-        guest_players = [' #'.join([player_dict[player.id][0], player_dict[player.id][1]]) for player in sorted_players[5:]]
-        players_data = list(zip(home_players, guest_players))
-
-        table = plt.table(cellText=players_data,
-                              colLabels=column_labels,
-                              colColours=column_colours,
-                              colWidths=[Constant.COL_WIDTH, Constant.COL_WIDTH],
-                              loc='bottom',
-                              cellColours=cell_colours,
-                              fontsize=Constant.FONTSIZE,
-                              cellLoc='center')
+        table = plt.table(cellText=[('', '') for x in range(5)],
+                            colLabels=column_labels,
+                            colColours=column_colours,
+                            colWidths=[Constant.COL_WIDTH, Constant.COL_WIDTH],
+                            loc='bottom',
+                            cellColours=cell_colours,
+                            fontsize=Constant.FONTSIZE,
+                            cellLoc='center')
         #table.scale(1, Constant.SCALE)
         table_cells = table.properties()['children']
         for cell in table_cells:
             cell._text.set_color('white')
 
-        player_circles = [plt.Circle((0, 0), Constant.PLAYER_CIRCLE_SIZE, color=player.color)
-                          for player in start_moment.players]
-        ball_circle = plt.Circle((0, 0), Constant.PLAYER_CIRCLE_SIZE,
-                                 color=start_moment.ball.color)
+
         for circle in player_circles:
             ax.add_patch(circle)
         ax.add_patch(ball_circle)
-
-        anim = animation.FuncAnimation(
-                         fig, self.update_radius,
-                         fargs=(player_circles, ball_circle, annotations, clock_info),
-                         frames=len(self.moments), interval=Constant.INTERVAL)
+        
         court = plt.imread("court.png")
-        plt.imshow(court, zorder=0, extent=[Constant.X_MIN, Constant.X_MAX - Constant.DIFF,
-                                            Constant.Y_MAX, Constant.Y_MIN])
+        anim = animation.FuncAnimation(
+            fig, self.update_radius,
+            fargs=(player_circles, ball_circle, annotations, clock_info, show_moment_df, players_df, ball_df, table_cells),
+            frames=len(show_moment_df), interval=15)
+
+
+        ax.imshow(court, zorder=0, extent=[Constant.X_MIN, Constant.X_MAX - Constant.DIFF,
+                                        Constant.Y_MAX, Constant.Y_MIN])
+
         #plt.show()
-        anim.save('ejjjj.gif')
+        anim.save(file_name, dpi=200)
+        
+    def count_dist(self, ball, player):
+        return math.sqrt(pow(player.x - ball.x, 2) + pow(player.y - ball.y, 2))
+        
+    def fix_shot_moment(self, shot, ball_df):
+        MAX_DIST_BALL_SHOOTER = 2
+        UNACCURATE_THRESHOLD = 25 * 24 # 25hz * 24s shot clock
+        
+        moment_id = shot.moment_id
+        shooter_id = shot.PLAYER1_ID
+        shooter_move_df = self.move_df[self.move_df['object_id'] == shooter_id]
+        
+        actual_ball = ball_df[ball_df['moment_id'] == moment_id].iloc[0]
+        actual_shooter = shooter_move_df[shooter_move_df['moment_id'] == moment_id].iloc[0]
+        distance = self.count_dist(actual_ball, actual_shooter)
+        counter = 0
+        while distance > MAX_DIST_BALL_SHOOTER:
+            moment_id -= 1
+            
+            actual_ball = ball_df[ball_df['moment_id'] == moment_id].iloc[0]
+            actual_shooter = shooter_move_df[shooter_move_df['moment_id'] == moment_id].iloc[0]
+            distance = self.count_dist(actual_ball, actual_shooter)
+            if counter > UNACCURATE_THRESHOLD: 
+                print('Unaccurate repair shot num {shot.EVENTNUM}')
+            counter += 1
+        shot.moment_id = moment_id
+        return shot
+
+    def get_shot_df(self):
+        shot_df = self.action_df[self.action_df['EVENTMSGTYPE'].isin([1,2,3])]
+        ball_df = self.move_df[self.move_df['object_id'] == -1]
+        shot_df = shot_df.apply(lambda shot: self.fix_shot_moment(shot, ball_df), axis=1)
+        shot_df = shot_df.drop(['play_time', 'quater_time'], axis=1)
+        merge_df = self.moment_df[['moment_id', 'quater_time', 'play_time']]
+        shot_df = pd.merge(shot_df, merge_df, how='left', on='moment_id')
+        return shot_df
+    
+    def get_dfs(self):
+        return self.moment_df, self.game_series, self.move_df, self.player_df, self.team_df, self.action_df
+
+    

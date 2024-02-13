@@ -11,8 +11,8 @@ class Constant:
     COL_WIDTH = 0.3
     SCALE = 1.65
     FONTSIZE = 6
-    X_CENTER = X_MAX / 2 - DIFF / 1.5 + 0.10
-    Y_CENTER = Y_MAX - DIFF / 1.5 - 0.35
+    X_CENTER = X_MAX / 2 - DIFF / 1.5 + 0.10 + 0.5
+    Y_CENTER = Y_MAX - DIFF / 1.5
     MESSAGE = 'You can rerun the script and choose any event from 0 to '
     BALL_COLOR = '#ff8c00'
     TEAMS_COLOR = {
